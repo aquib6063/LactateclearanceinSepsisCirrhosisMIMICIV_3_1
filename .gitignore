@@ -1,0 +1,13 @@
+# MIMIC-IV patient-level data must never be committed (PhysioNet data use agreement)
+data/
+*.csv
+
+# Generated results
+outputs/
+
+# Caches
+.cache/
+.matplotlib_cache/
+__pycache__/
+*.pyc
+.DS_Store

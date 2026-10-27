@@ -29,8 +29,8 @@ from statsmodels.duration.hazard_regression import PHReg
 from statsmodels.duration.survfunc import SurvfuncRight
 
 SCRIPT_DIR = Path(__file__).resolve().parent
-DATA_PATH = SCRIPT_DIR / 'job_-0WDwXZjrgZtzzeA8wjpeJ_1Nhng.csv'
-OUTPUT_DIR = SCRIPT_DIR / 'phase2_python_outputs'
+DATA_PATH = Path(os.environ.get('DATA_PATH', SCRIPT_DIR / 'data' / 'cohort_extract.csv'))
+OUTPUT_DIR = SCRIPT_DIR / 'outputs' / 'main'
 RANDOM_SEED = 42
 N_IMPUTATIONS = int(os.environ.get('N_IMPUTATIONS', '25'))
 N_BOOTSTRAPS = int(os.environ.get('N_BOOTSTRAPS', '1000'))
@@ -161,6 +161,28 @@ def run_multiple_imputation(df_input: pd.DataFrame, m: int = N_IMPUTATIONS, seed
         impute_cols = [c for c in mice_predictor_impute_cols if c in temp.columns]
         work_cols = impute_cols + [c for c in aux_cols if c not in impute_cols]
         imputer = IterativeImputer(sample_posterior=True, random_state=seed + i, max_iter=30)
+        imputed = pd.DataFrame(imputer.fit_transform(temp[work_cols]), columns=work_cols, index=temp.index)
+        temp[impute_cols] = imputed[impute_cols]
+        for col in binary_model_covariates + ['female_flag']:
+            if col in temp.columns:
+                temp[col] = temp[col].round().clip(0, 1).astype(int)
+        for col in aux_cols:
+            temp[col] = df_input[col]
+        temp = derive_variables(temp)
+        datasets.append(temp)
+    return datasets
+
+
+def run_multiple_imputation_stability_50(df_input: pd.DataFrame, m: int = N_IMPUTATIONS, seed: int = RANDOM_SEED) -> list[pd.DataFrame]:
+    """Diagnostic MICE stability run matching the primary procedure except for max_iter=50."""
+    datasets: list[pd.DataFrame] = []
+    for i in range(m):
+        temp = df_input.copy()
+        temp['female_flag'] = female_indicator(temp['sex'])
+        aux_cols = [c for c in imputation_auxiliary_cols if c in temp.columns]
+        impute_cols = [c for c in mice_predictor_impute_cols if c in temp.columns]
+        work_cols = impute_cols + [c for c in aux_cols if c not in impute_cols]
+        imputer = IterativeImputer(sample_posterior=True, random_state=seed + i, max_iter=50)
         imputed = pd.DataFrame(imputer.fit_transform(temp[work_cols]), columns=work_cols, index=temp.index)
         temp[impute_cols] = imputed[impute_cols]
         for col in binary_model_covariates + ['female_flag']:
@@ -684,15 +706,17 @@ def calibration_metrics(y: np.ndarray, p: np.ndarray) -> dict[str, float]:
 def save_roc_plot(df_plot: pd.DataFrame, auc_summary: dict[str, dict[str, float]], filename: str) -> None:
     plt.figure(figsize=(9, 7))
     colors = {'clearance_12h': '#1f77b4', 'clearance_24h': '#ff7f0e', 'clearance_48h': '#2ca02c'}
+    timepoint_labels = {'clearance_12h': '12-hour', 'clearance_24h': '24-hour', 'clearance_48h': '48-hour'}
     for col in ['clearance_12h', 'clearance_24h', 'clearance_48h']:
         fpr, tpr, _ = roc_curve(df_plot['mortality_30d'], -df_plot[col])
-        plt.plot(fpr, tpr, lw=2.5, color=colors[col], label=f"{col.replace('clearance_', '').upper()} AUC = {auc_summary[col]['point_auc']:.3f}")
+        plt.plot(fpr, tpr, lw=2.5, color=colors[col], label=f"{timepoint_labels[col]} clearance (AUROC = {auc_summary[col]['point_auc']:.3f})")
     plt.plot([0, 1], [0, 1], 'k--', lw=1)
-    plt.xlabel('False Positive Rate')
-    plt.ylabel('True Positive Rate')
-    plt.title('ROC Comparison: 12h vs 24h vs 48h Clearance')
+    plt.xlabel('False-positive rate')
+    plt.ylabel('True-positive rate')
+    plt.suptitle('Lactate Clearance Discrimination for 30-Day Mortality', y=0.98)
+    plt.title(f"Shared complete-case predictive cohort: N={len(df_plot)}; {int(df_plot['mortality_30d'].sum())} events", fontsize=11, pad=10)
     plt.legend(loc='lower right')
-    plt.tight_layout()
+    plt.tight_layout(rect=[0, 0, 1, 0.96])
     plt.savefig(filename, dpi=300)
     plt.close()
 
@@ -836,7 +860,7 @@ def missingness_table(cohort_map: dict[str, pd.DataFrame], variables: list[str])
 
 
 def main() -> None:
-    OUTPUT_DIR.mkdir(exist_ok=True)
+    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
     os.chdir(OUTPUT_DIR)
     warnings.filterwarnings('default')
     np.random.seed(RANDOM_SEED)
@@ -986,11 +1010,21 @@ def main() -> None:
     pd.DataFrame(treatment_sensitivity_rows).to_csv('Table_Sensitivity_TreatmentConfounding.csv', index=False)
 
     # --- Cirrhosis etiology subgroup analysis (only where event counts are adequate; descriptive/exploratory) ---
+    # Collapse the existing classification only for this sensitivity analysis.
     MIN_EVENTS_PER_SUBGROUP = 10
     if 'cirrhosis_etiology' in df_raw.columns:
+        etiology_sensitivity_map = {
+            'alcohol_associated': 'alcoholic',
+            'viral': 'non_alcoholic',
+            'cholestatic_biliary': 'non_alcoholic',
+            'other_cryptogenic': 'non_alcoholic',
+        }
+        cc48_etio = cc48.copy()
+        cc48_etio['etiology_sensitivity_group'] = cc48_etio['cirrhosis_etiology'].map(etiology_sensitivity_map)
+        cc48_etio = cc48_etio.dropna(subset=['etiology_sensitivity_group'])
         etiology_rows = []
-        for etiology_group in sorted(cc48['cirrhosis_etiology'].dropna().unique()):
-            sub = cc48[cc48['cirrhosis_etiology'] == etiology_group]
+        for etiology_group in ['alcoholic', 'non_alcoholic']:
+            sub = cc48_etio[cc48_etio['etiology_sensitivity_group'] == etiology_group]
             n_events = int(sub['event_30d_after_landmark'].sum())
             if n_events < MIN_EVENTS_PER_SUBGROUP:
                 etiology_rows.append({'etiology': etiology_group, 'n': len(sub), 'n_events': n_events, 'hr': np.nan, 'hr_ci_lower': np.nan, 'hr_ci_upper': np.nan, 'p_value': np.nan, 'note': f'skipped: fewer than {MIN_EVENTS_PER_SUBGROUP} events'})
@@ -1000,9 +1034,8 @@ def main() -> None:
             etiology_rows.append({'etiology': etiology_group, 'n': len(sub), 'n_events': n_events, 'hr': sub_row['hr'], 'hr_ci_lower': sub_row['hr_ci_lower'], 'hr_ci_upper': sub_row['hr_ci_upper'], 'p_value': sub_row['p_value'], 'note': ''})
         pd.DataFrame(etiology_rows).to_csv('Table_Sensitivity_CirrhosisEtiology_Subgroups.csv', index=False)
         # Formal interaction test (etiology x clearance) only if overall sample supports it
-        cc48_etio = cc48.dropna(subset=['cirrhosis_etiology']).copy()
-        if int(cc48_etio['event_30d_after_landmark'].sum()) >= MIN_EVENTS_PER_SUBGROUP * cc48_etio['cirrhosis_etiology'].nunique():
-            etio_dummies = pd.get_dummies(cc48_etio['cirrhosis_etiology'], prefix='etio', drop_first=True).astype(float)
+        if int(cc48_etio['event_30d_after_landmark'].sum()) >= MIN_EVENTS_PER_SUBGROUP * cc48_etio['etiology_sensitivity_group'].nunique():
+            etio_dummies = pd.get_dummies(cc48_etio['etiology_sensitivity_group'], prefix='etio', drop_first=True).astype(float)
             interact_df = cc48_etio.copy()
             for col in etio_dummies.columns:
                 interact_df[col] = etio_dummies[col].to_numpy()
@@ -1231,6 +1264,54 @@ def main() -> None:
         {'analysis': 'mice_pooled', 'hr': mice48_row['hr'], 'hr_ci_lower': mice48_row['hr_ci_lower'], 'hr_ci_upper': mice48_row['hr_ci_upper'], 'p_value': mice48_row['p_value'], 'n': int(mice48_row['n'])},
     ]).to_csv('Table_CompleteCase_vs_MICE_48h_Comparison.csv', index=False)
 
+    # Diagnostic/stability sensitivity only: repeat the same 25-imputation 48h MICE
+    # analysis with max_iter=50. The official max_iter=30 imputations above remain unchanged.
+    landmark_imputations_stability_50 = run_multiple_imputation_stability_50(
+        df_landmark, m=N_IMPUTATIONS, seed=RANDOM_SEED
+    )
+    landmark_imputations_stability_50 = [
+        add_scaled_predictor(ds, 'clearance_48h', 'clearance_48h_per10', 10.0)
+        for ds in landmark_imputations_stability_50
+    ]
+    cox_fit_log_length_before_stability = len(COX_FIT_LOG)
+    mice_48_cont_stability_50 = pooled_cox_ph(
+        landmark_imputations_stability_50,
+        'time_from_landmark_to_censor_or_death',
+        'event_30d_after_landmark',
+        ['clearance_48h_per10'] + covariates,
+    )
+    del COX_FIT_LOG[cox_fit_log_length_before_stability:]
+    mice48_stability_50_row = mice_48_cont_stability_50.loc[
+        mice_48_cont_stability_50['term'] == 'clearance_48h_per10'
+    ].iloc[0]
+    mice_iteration_stability_rows = [
+        {
+            'analysis_role': 'official_secondary_MICE',
+            'max_iterations': 30,
+            'number_of_imputations': N_IMPUTATIONS,
+            'pooled_coefficient': mice48_row['coef'],
+            'pooled_hr': mice48_row['hr'],
+            'hr_ci_lower': mice48_row['hr_ci_lower'],
+            'hr_ci_upper': mice48_row['hr_ci_upper'],
+            'p_value': mice48_row['p_value'],
+            'absolute_change_in_hr_vs_30': 0.0,
+            'absolute_change_in_coefficient_vs_30': 0.0,
+        },
+        {
+            'analysis_role': 'diagnostic_stability_sensitivity',
+            'max_iterations': 50,
+            'number_of_imputations': N_IMPUTATIONS,
+            'pooled_coefficient': mice48_stability_50_row['coef'],
+            'pooled_hr': mice48_stability_50_row['hr'],
+            'hr_ci_lower': mice48_stability_50_row['hr_ci_lower'],
+            'hr_ci_upper': mice48_stability_50_row['hr_ci_upper'],
+            'p_value': mice48_stability_50_row['p_value'],
+            'absolute_change_in_hr_vs_30': abs(mice48_stability_50_row['hr'] - mice48_row['hr']),
+            'absolute_change_in_coefficient_vs_30': abs(mice48_stability_50_row['coef'] - mice48_row['coef']),
+        },
+    ]
+    pd.DataFrame(mice_iteration_stability_rows).to_csv('Table_MICE_Iteration_Stability_30_vs_50.csv', index=False)
+
     mice_24_full_cont = pooled_cox_ph(full_imputations, 'survival_days_30', 'mortality_30d', ['clearance_24h_per10'] + covariates)
     mice_24_full_cont.to_csv('Table_Cox_MICE_24h_FullCohort_Continuous.csv', index=False)
     for i, ds in enumerate(full_imputations, start=1):
@@ -1282,6 +1363,14 @@ def main() -> None:
         'primary_48h_cox': primary48,
         'primary_covariates': covariates,
         'primary_parameter_count': 1 + len(covariates),
+        'mice_iteration_stability': {
+            'analysis_role': 'diagnostic/stability sensitivity; not the primary MICE analysis',
+            'official_max_iterations': 30,
+            'diagnostic_max_iterations': 50,
+            'number_of_imputations': N_IMPUTATIONS,
+            'official_30_iteration': mice_iteration_stability_rows[0],
+            'diagnostic_50_iteration': mice_iteration_stability_rows[1],
+        },
         'design_limitations': [
             '12h and 24h clearance Cox analyses are conducted inside the 48-hour landmark cohort, creating potential survivorship/selection concerns.',
             '24h full-cohort sensitivity requires observed 24h lactate while survival begins at sepsis onset, so it may be subject to immortal-time/selection bias.',
@@ -1303,7 +1392,7 @@ Frozen CSV: `{DATA_PATH.name}`
 
 Frozen SQL/pipeline: `finalized_sql_landmark_corrected.sql`
 
-Corrected script: `phase2_corrected_analysis.py`
+Corrected script: `02_lactate_clearance_main_analysis.py`
 
 ## Cohort QC
 
@@ -1331,6 +1420,8 @@ Primary 48h HR: {primary48['hr']:.3f} ({primary48['hr_ci_lower']:.3f}-{primary48
 
 MICE used {N_IMPUTATIONS} imputations. Predictor data were imputed with outcome/time variables available as auxiliary predictors, then observed outcome/time fields were restored before survival modeling. Raw lactates were imputed first; clearance and per-10 exposure were recalculated afterward. Rubin pooling was used.
 
+The official secondary MICE analysis retained `max_iter=30`. A separate diagnostic/stability sensitivity analysis repeated the same {N_IMPUTATIONS}-imputation procedure and pooled 48h Cox model with `max_iter=50`, using the same seeds and all other settings. The 50-iteration diagnostic HR was {mice48_stability_50_row['hr']:.6f} ({mice48_stability_50_row['hr_ci_lower']:.6f}-{mice48_stability_50_row['hr_ci_upper']:.6f}); P={mice48_stability_50_row['p_value']:.6g}. Its absolute HR change versus the official 30-iteration result was {abs(mice48_stability_50_row['hr'] - mice48_row['hr']):.6f}; this diagnostic does not replace the official MICE result.
+
 ## Prediction
 
 Univariable clearance AUROC is saved separately from multivariable prediction AUROC. Incremental prediction outputs identify baseline and expanded models. Optimism correction uses the same 48h multivariable predictor set for the apparent and bootstrap models.
@@ -1341,7 +1432,7 @@ Calibration intercept, calibration slope, Brier score, and Hosmer-Lemeshow descr
 
 ## Sensitivities and Diagnostics
 
-PH diagnostics, EPV/model complexity, MNAR delta adjustment, P95 baseline lactate sensitivity, treatment-confounding sensitivity, etiology subgroup/interaction analyses, boundary sensitivity, and mathematical-coupling assessment were run and saved in `phase2_python_outputs`.
+PH diagnostics, EPV/model complexity, MNAR delta adjustment, P95 baseline lactate sensitivity, treatment-confounding sensitivity, etiology subgroup/interaction analyses, boundary sensitivity, and mathematical-coupling assessment were run and saved in `phase2_python_outputs`. For the etiology sensitivity analysis only, the existing categories were collapsed into `alcoholic` (`alcohol_associated`) and `non_alcoholic` (`viral`, `cholestatic_biliary`, and `other_cryptogenic`).
 
 ## Design Limitations to Carry Forward
 

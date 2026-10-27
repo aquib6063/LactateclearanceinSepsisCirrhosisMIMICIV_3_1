@@ -1,96 +1,49 @@
-# LactateclearanceinSepsisCirrhosisMIMICIV_3_1
+# Lactate Clearance and 30-Day Mortality in Cirrhosis with Sepsis (MIMIC-IV v3.1)
 
-# Association between 48-Hour Lactate Clearance and Thirty-Day Mortality in Patients with Cirrhosis and Sepsis
+Code for the study **"Association between 48-Hour Lactate Clearance and Thirty-Day Mortality Hazard in Patients with Cirrhosis and Sepsis"** (World Journal of Critical Care Medicine, manuscript no. 126511).
 
-This repository contains the analysis code used for the manuscript:
+The study uses MIMIC-IV v3.1 to evaluate whether lactate clearance at 12, 24 and 48 hours after sepsis onset is associated with 30-day mortality in adult ICU patients with cirrhosis and Sepsis-3, using a 48-hour landmark design.
 
-**Association between 48-Hour Lactate Clearance and Thirty-Day Mortality in Patients with Cirrhosis and Sepsis**
+## Files
 
-The study uses data from **MIMIC-IV version 3.1** to evaluate the association between lactate clearance at 12, 24, and 48 hours and 30-day mortality among critically ill adults with cirrhosis and sepsis.
+| File | What it does |
+| --- | --- |
+| `01_cohort_extraction_mimiciv.sql` | Builds the cohort in Google BigQuery: Sepsis-3 + cirrhosis (ICD-9/10), first eligible ICU stay per patient, lactate at 0/12/24/48 h, covariates, 30-day outcomes and 48-hour landmark variables. |
+| `02_lactate_clearance_main_analysis.py` | Main analysis: cohort flow, complete-case landmark Cox models (continuous and categorical clearance), diagnostics, sensitivity analyses, multiple imputation (MICE) and MNAR delta adjustment, discrimination, NRI/IDI, calibration and decision curves. |
+| `03_lactate_clearance_sensitivity_rcs_reduced.py` | Additional sensitivity analyses: reduced 7-parameter Cox model (12/24/48 h) and restricted cubic spline for 48-hour clearance. Imports functions from `02_...` and rebuilds the identical cohorts. |
+| `requirements.txt` | Python package versions used for the published results. |
 
-## Repository Contents
+## Data access
 
-### 1. `finalized_sql_landmark_corrected.sql`
+MIMIC-IV is a credentialed-access database. Patient-level data **cannot be shared** in this repository.
+To reproduce the analysis you need your own PhysioNet credentialed access to [MIMIC-IV v3.1](https://physionet.org/content/mimiciv/3.1/) (including completion of the required CITI training) and access to the MIMIC-IV BigQuery datasets (`physionet-data.mimiciv_3_1_*`).
 
-SQL code used to construct the primary study cohort from MIMIC-IV v3.1, including:
+## How to run
 
-- Identification of adult ICU admissions meeting Sepsis-3 criteria
-- Identification of concurrent cirrhosis
-- Selection of the first eligible ICU admission per patient
-- Baseline lactate assessment
-- Definition of baseline hyperlactatemia (lactate ≥2.0 mmol/L)
-- 48-hour landmark cohort construction
-- Extraction of baseline clinical and laboratory covariates
-- Ascertainment of 30-day mortality and survival time
+1. **Extract the cohort.** Run `01_cohort_extraction_mimiciv.sql` in Google BigQuery. Export the result as CSV and save it as `data/cohort_extract.csv`.
+2. **Set up Python** (3.13 was used):
+   ```
+   pip install -r requirements.txt
+   ```
+3. **Run the main analysis:**
+   ```
+   python 02_lactate_clearance_main_analysis.py
+   ```
+   Results are written to `outputs/main/`.
+4. **Run the sensitivity analyses:**
+   ```
+   python 03_lactate_clearance_sensitivity_rcs_reduced.py
+   ```
+   Results are written to `outputs/sensitivity/`. A plain-text summary of key results is saved as `Round3_Summary.txt`.
 
-### 2. `phase2_corrected_analysis.py`
+Both scripts stop with an error if the cohort sizes differ from the published cohort (730 with baseline hyperlactatemia, 665 in the 48-hour landmark cohort; 413 / 334 / 281 complete cases at 12 / 24 / 48 hours). This guards against a changed extraction or data version.
 
-Python code used for the statistical analyses, including:
-
-- Complete-case Cox proportional hazards models for 12-, 24-, and 48-hour lactate clearance
-- Categorical and continuous lactate-clearance analyses
-- Multiple imputation using chained equations (MICE)
-- Missing-not-at-random sensitivity analyses
-- Treatment-confounding sensitivity analyses
-- Cirrhosis-etiology subgroup analyses
-- Proportional-hazards and nonlinearity assessments
-- Discrimination analyses using AUROC
-- Incremental predictive-performance analyses
-- Reclassification analyses using NRI and IDI
-- Calibration analyses
-- Decision-curve analysis
-- Bootstrap optimism correction
-
-## Primary Analysis
-
-The primary association analysis uses a **48-hour landmark design**. Patients who died before the 48-hour/day-2 boundary were excluded from the landmark cohort, and subsequent mortality was analyzed from the landmark.
-
-The primary exposure is **48-hour lactate clearance**, calculated from baseline and 48-hour lactate measurements.
+A different CSV location can be given with the `DATA_PATH` environment variable.
 
 ## Reproducibility
 
-The repository provides the SQL and Python analysis code used to generate the study cohort and statistical analyses. The analyses require access to the **MIMIC-IV v3.1 database** and appropriate PhysioNet credentialing and data-use permissions.
+The Cox models, spline knots and cohort construction are deterministic. Multiple imputation, cross-validation and bootstrap steps use a fixed random seed (42). With the same data and package versions, the scripts reproduce the published numbers exactly.
 
-No patient-level MIMIC-IV data are included in this repository.
+## Contact
 
-Researchers reproducing the analysis should use their own authorized MIMIC-IV v3.1 data and follow the MIMIC-IV data-use requirements.
-
-## Data Availability
-
-MIMIC-IV is a restricted-access critical care database available through PhysioNet following completion of the required credentialing and data-use procedures.
-
-The authors do not redistribute MIMIC-IV patient-level data.
-
-## Analysis Workflow
-
-The analysis follows the workflow:
-
-MIMIC-IV v3.1  
-↓  
-SQL cohort construction  
-↓  
-Hyperlactatemia cohort  
-↓  
-48-hour landmark cohort  
-↓  
-Complete-case and multiple-imputation analyses  
-↓  
-Cox regression and sensitivity analyses  
-↓  
-Predictive-performance and clinical-utility analyses
-
-## Software
-
-The statistical analyses were performed using Python and standard scientific/statistical computing libraries. SQL was used for cohort construction from MIMIC-IV.
-
-## Manuscript
-
-This repository accompanies the manuscript submitted to the:
-
-**World Journal of Critical Care Medicine**
-
-Manuscript No.: **126511**
-
-## Citation
-
-If you use or adapt this analysis code, please cite the associated manuscript and the original MIMIC-IV database publication.
+Corresponding author: Aalam Sohal, MD — Division of Gastroenterology and Hepatology, Creighton University School of Medicine, Phoenix, AZ, USA.
